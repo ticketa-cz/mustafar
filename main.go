@@ -66,6 +66,7 @@ func route_requests() {
     router.HandleFunc("/in/", link_insert)
     router.HandleFunc("/injson/", link_insert_json)
     router.HandleFunc("/out/{data_key}", link_output)
+    router.HandleFunc("/outjson/", link_output_json)
     router.HandleFunc("/setup/", link_setup)
 	log.Fatal(http.ListenAndServe(":8080", router))
 
@@ -197,7 +198,7 @@ func link_output( w http.ResponseWriter, r *http.Request ) {
 
     if id_passed == "" {
 
-        response = JsonResponse { Type: "Error", Message: "You are missing Data ID parameter. Value passed: " + id_passed }
+        response = JsonResponse { Type: "Error", Message: "You are missing Data ID parameter." }
 
     } else {
 
@@ -218,7 +219,7 @@ func link_output( w http.ResponseWriter, r *http.Request ) {
         for rows.Next() {
 
             var id                  int
-            var data_key             string
+            var data_key            string
             var data_value          string
             var data_expiration     int64
     
@@ -257,13 +258,16 @@ func link_output( w http.ResponseWriter, r *http.Request ) {
 
         // response //
         
-        response = JsonResponse { Type: "Success", Data: data_output, Message: "Data ID parameter value passed: " + id_passed }
+        response = JsonResponse { Type: "Success", Data: data_output, Message: "Data key parameter value passed: " + id_passed }
 
     }
 
     json.NewEncoder(w).Encode(response)
 
 }
+
+
+///////////////////////// JSON VERSIONS //////////////////////////
 
 
 // link insert from JSON //
@@ -328,6 +332,93 @@ func link_insert_json( w http.ResponseWriter, r *http.Request ) {
 
     data_output = Data { Data_key: input.Data_key, Data_value: data_encoded, Data_expiration: data_expiration }
     response = JsonResponse { Type: "Success", Message: "The data has been inserted successfully!", Data: data_output }
+
+    json.NewEncoder(w).Encode(response)
+
+}
+
+// data output function //
+
+func link_output_json( w http.ResponseWriter, r *http.Request ) {
+
+    w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+    w.WriteHeader(http.StatusOK)
+    var response = JsonResponse{}
+    var input Data
+
+    // decode JSON input //
+
+    err := json.NewDecoder(r.Body).Decode(&input)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    if input.Data_key == "" {
+
+        response = JsonResponse { Type: "Error", Message: "You are missing data key parameter." }
+
+    } else {
+
+        // connect db //
+        
+        db := setupDB()
+
+        rows, err := db.Query("SELECT id, data_key, data_value, data_expiration FROM app_data WHERE data_key = $1", input.Data_key)
+        checkErr(w, err)
+        defer rows.Close()
+
+        today_date  := time.Now()
+        date_newest := time.Now()
+        var data_output = Data{}
+
+        // loop through rows //
+        
+        for rows.Next() {
+
+            var id                  int
+            var data_key            string
+            var data_value          string
+            var data_expiration     int64
+    
+            err = rows.Scan( &id, &data_key, &data_value, &data_expiration )
+
+            data_expiration_time := time.Unix(data_expiration, 0)
+    
+            // check errors //
+
+            checkErr(w, err)
+
+            // get the newest record // and before expiration //
+
+            if data_expiration_time.After( date_newest ) && data_expiration_time.After( today_date ) {
+
+                data_output = Data { Data_key: data_key, Data_value: data_value, Data_expiration: data_expiration_time }
+                date_newest = data_expiration_time
+
+            }
+
+            // erase record after expiration //
+            
+            if data_expiration_time.Before( today_date ) {
+                
+                _, del_err := db.Exec("DELETE FROM app_data WHERE id = $1", id)
+                checkErr(w, del_err)
+
+            }
+            
+        }
+
+        // check row errors //
+
+        err = rows.Err()
+        checkErr(w, err)
+
+        // response //
+        
+        response = JsonResponse { Type: "Success", Data: data_output, Message: "Data key parameter value passed: " + input.Data_key }
+
+    }
 
     json.NewEncoder(w).Encode(response)
 
